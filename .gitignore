@@ -1,0 +1,17 @@
+*.py[cod]                                                                                                          
+*.egg-info
+*.eggs
+.ipynb_checkpoints
+
+build
+dist
+.cache
+__pycache__
+
+htmlcov
+.coverage
+coverage.xml
+.pytest_cache
+.tox
+
+.DS_Store
