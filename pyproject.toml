@@ -2,7 +2,7 @@
 name = "guts_proto"
 version = "0.0.1"
 dependencies = [
-  "sqlite3",
+  "numpy>=1.24.2",
 ]
 authors = [
   { name = "Lucas Esclapez" }
