@@ -1,4 +1,5 @@
 from guts_utils.guts_task import guts_task
+from guts_utils.guts_event import guts_event
 from typing import Optional
 import uuid
 import sqlite3
@@ -37,8 +38,14 @@ class guts_queue:
         # Ensure the counter row is initialized (there will be only one row with id=1)
         cursor.execute('INSERT OR IGNORE INTO task_counter (id, completed_tasks) VALUES (1, 0)')
 
-        # Todo: 
         # Create an events queue
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        )
+        ''')
 
         conn.commit()
         conn.close()
@@ -67,6 +74,15 @@ class guts_queue:
         conn.commit()
         conn.close()
         return t_uuid
+
+    def add_event(self, event):
+        """ Add a new event to the queue """
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO events (event_json, status) VALUES (?, ?)',
+                       (event.to_json(), 'pending'))
+        conn.commit()
+        conn.close()
 
     def fetch_task(self):
         """ Fetch the next pending task and mark it as 'in_progress' """
@@ -129,6 +145,16 @@ class guts_queue:
         conn = self._connect()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT() FROM tasks')
+        count = cursor.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return count
+
+    def get_events_count(self):
+        """ Return the total number of events in the queue """
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT() FROM events')
         count = cursor.fetchone()[0]
         conn.commit()
         conn.close()

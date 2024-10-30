@@ -4,6 +4,7 @@ import os
 
 from guts_utils.guts_queue import guts_queue
 from guts_utils.guts_task import guts_task
+from guts_utils.guts_event import guts_event
 
 def test_initDB():
     """Test creating a database."""
@@ -23,4 +24,12 @@ def test_add_task():
     task = guts_task("dummy", {})
     queue.add_task(task)
     assert queue.get_tasks_count() == 1
+    os.remove("./guts_queue.db")
+
+def test_add_event():
+    """Test adding a task to the queue."""
+    queue = guts_queue()
+    event = guts_event(1, "DoNothing")
+    queue.add_event(event)
+    assert queue.get_events_count() == 1
     os.remove("./guts_queue.db")
