@@ -96,7 +96,7 @@ def worker_function(queue : guts_queue,
             # Check for events in the queue
             event_data = queue.fetch_event()
             if event_data:
-                event_id, event = event_data
+                event_id, event_count, event = event_data
                 process_event(event, wid, queue)
 
             # Check for tasks in the queue
@@ -110,7 +110,7 @@ def worker_function(queue : guts_queue,
                 task.execute()
 
                 # Mark task as done
-                queue.mark_task_done(task_id)
+                queue.mark_task_done(task_uuid)
                 print(f"Worker {worker_id} completed task {task_id}")
 
                 # Atomically increment the completed task counter
