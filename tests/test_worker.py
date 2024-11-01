@@ -12,15 +12,41 @@ def test_init():
     """Test creating a workergroup."""
     config = {}
     resource_config = {"nworkers": 1}
-    worker = guts_workergroup(0, config, resource_config)
-    assert(worker.id() == 0)
+    wgroup = guts_workergroup(0, config, resource_config)
+    assert(wgroup.id() == 0)
 
-def test_acquire_resources():
-    """Test creating a workergroup and acquiring resources."""
+def test_init_withqueue():
+    """Test creating a workergroup with a queue."""
+    queue = guts_queue()
+    config = {}
+    resource_config = {"nworkers": 1, "deamonize": False, "runtime": 2}
+    wgroup = guts_workergroup(0, config, resource_config, queue = queue)
+
+def test_attach_queue():
+    """Test creating a workergroup then attach a queue."""
+    config = {}
+    resource_config = {"nworkers": 1, "deamonize": False, "runtime": 2}
+    wgroup = guts_workergroup(0, config, resource_config)
+    queue = guts_queue()
+    wgroup.attach_queue(queue)
+
+def test_reattach_queue():
+    """Test creating a workergroup with a queue then attach a queue."""
+    queue_1 = guts_queue()
+    config = {}
+    resource_config = {"nworkers": 1, "deamonize": False, "runtime": 2}
+    wgroup = guts_workergroup(0, config, resource_config, queue = queue_1)
+    queue_2 = guts_queue()
+    with pytest.raises(Exception):
+        wgroup.attach_queue(queue_2)
+
+def test_acquire_resources_without_queue():
+    """Test creating a workergroup, acquiring resources without a queue."""
     config = {}
     resource_config = {"nworkers": 1, "deamonize": False, "runtime": 2}
     worker = guts_workergroup(0, config, resource_config)
-    worker.acquire_resources()
+    with pytest.raises(Exception):
+        worker.acquire_resources()
 
 def test_acquire_resources_with_queue():
     """Test creating a workergroup, acquiring resources and a queue."""
@@ -30,6 +56,6 @@ def test_acquire_resources_with_queue():
     config = {}
     resource_config = {"nworkers": 2, "deamonize": False, "runtime": 6}
     worker = guts_workergroup(0, config, resource_config)
-    worker.set_queue(queue)
+    worker.attach_queue(queue)
     worker.acquire_resources()
-    queue.delete_queue(timeout=15)
+    queue.delete(timeout=10)
