@@ -7,15 +7,17 @@ import os
 import sqlite3
 
 class guts_queue:
+    """A disk-based SQL queue for GUTS.
+
+    TODO: a description of content and API
+    """
     def __init__(self, db_name : Optional[str] = 'guts_queue.db'):
         self.db_name = db_name
         self._init_db()
 
     def _init_db(self):
         """ Initialize the task table and counter table """
-        sqlite3.register_adapter(uuid.UUID, lambda u: u.bytes_le)
-        sqlite3.register_converter('GUID', lambda b: uuid.UUID(bytes_le=b))
-        conn = sqlite3.connect(self.db_name)
+        conn = self._connect()
         cursor = conn.cursor()
 
         # Create tasks table if it doesn't exist
@@ -30,6 +32,7 @@ class guts_queue:
         ''')
 
         # Create a table to track completed tasks
+        # TODO: might be useless
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS task_counter (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -50,11 +53,20 @@ class guts_queue:
         )
         ''')
 
-        # Create an worker register
+        # Create a worker register
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS workers (
             id INTEGER NOT NULL,
             gid INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'waiting'
+        )
+        ''')
+
+        # Create a worker group register
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS worker_groups (
+            id INTEGER NOT NULL,
+            resource_set_json TEXT,
             status TEXT NOT NULL DEFAULT 'waiting'
         )
         ''')
@@ -64,6 +76,9 @@ class guts_queue:
 
     def _connect(self):
         """ Create a new SQLite connection for each process """
+        # Append uuid to SQL supported types
+        sqlite3.register_adapter(uuid.UUID, lambda u: u.bytes_le)
+        sqlite3.register_converter('GUID', lambda b: uuid.UUID(bytes_le=b))
         return sqlite3.connect(self.db_name)
 
     def _exec_sql_getone(self, sql_cmd : str, args : Optional[tuple] = None) -> Optional[Any]:
@@ -73,7 +88,7 @@ class guts_queue:
         if args is None:
             res = cursor.execute(sql_cmd).fetchone()[0]
         else:
-            res = cursor.execute(sql_cmd, args).fetch()[0]
+            res = cursor.execute(sql_cmd, args).fetchone()[0]
         conn.commit()
         conn.close()
         return res
@@ -175,7 +190,6 @@ class guts_queue:
         if event_data:
             event_id, acc_count, event_json, status = event_data
             acc_count = acc_count + 1
-            print(event_id, acc_count, status)
             cursor.execute('UPDATE events SET acc_count = ? WHERE id = ?', (acc_count, event_id))
             conn.commit()
             conn.close()
@@ -184,7 +198,7 @@ class guts_queue:
         return None
 
     def register_worker(self, wid : tuple[int,int]) -> None:
-        """ Register a worker to the queue """
+        """ Register a worker in the queue """
         conn = self._connect()
         cursor = conn.cursor()
         cursor.execute('INSERT INTO workers (gid, id) VALUES (?, ?)', (wid[0], wid[1]))
@@ -215,6 +229,46 @@ class guts_queue:
         """ Return the number of active workers """
         return self._exec_sql_getone('SELECT COUNT() FROM workers WHERE status = "working"')
 
+    def register_worker_group(self,
+                              gid : int,
+                              status : Optional[str] = None) -> None:
+        """ Register a worker group in the queue """
+        conn = self._connect()
+        cursor = conn.cursor()
+        if status is None:
+            cursor.execute('INSERT INTO worker_groups(id) VALUES (?)', (gid,))
+        else:
+            cursor.execute('INSERT INTO worker_groups(id, status) VALUES (?,?)', (gid,status))
+        conn.commit()
+        conn.close()
+
+    def unregister_worker_group(self,
+                                gid : int) -> None:
+        """ Unregister a worker group from the queue """
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM worker_groups WHERE id = ?', (gid,))
+        conn.commit()
+        conn.close()
+
+    def check_worker_group(self, gid : int) -> str:
+        """Return the status of a given worker group."""
+        return self._exec_sql_getone('SELECT status FROM worker_groups WHERE id = ?', (gid,))
+
+    def update_worker_group_status(self,
+                                   gid : int,
+                                   status : str) -> None:
+        """ Update the worker group status in queue """
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE worker_groups SET status = ? WHERE id = ?', (status, gid))
+        conn.commit()
+        conn.close()
+
+    def get_worker_groups_count(self) -> int:
+        """ Return the number of worker groups """
+        return self._exec_sql_getone('SELECT COUNT() FROM worker_groups')
+
     def dump_tasks_json(self) -> None:
         """ Dump the content of the task table to a json file """
         conn = self._connect()
@@ -238,7 +292,7 @@ class guts_queue:
         conn.commit()
         conn.close()
 
-    def delete_queue(self,
+    def delete(self,
                      wait_for_done : bool = True,
                      timeout : int = 60) -> None:
         """Delete the DB when all tasks and workers are done"""
