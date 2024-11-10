@@ -4,8 +4,10 @@ import os
 import time
 import toml
 from typing import Any, Optional
-from guts_utils.guts_worker import guts_workergroup
+from guts_utils.guts_workergroup import guts_workergroup
 from guts_utils.guts_queue import guts_queue
+from guts_utils.guts_task import guts_task
+from guts_utils.guts_resource_manager import resource_manager
 
 def parse_cl_args(a_args: Optional[list[str]] = None) -> argparse.Namespace :
     """Parse provided list or default CL argv.
@@ -44,14 +46,39 @@ class guts_scheduler:
         self._queue = guts_queue(self._queue_file)
 
         # Worker groups & compute resources
-        self._backend : str = self._params.get("resource",{}).get("backend", "local")
+        self._resource_manager = resource_manager(self._params)
         self._wgroups : list[guts_workergroup] = []
     
-    def run(self) -> None:
-        """Run the scheduler."""
+    def start(self) -> None:
+        """Start the scheduler."""
         # Initialize the worker groups
-        self._nwgroups = self._params.get("resource",{}).get("ngroup",1)
-        resource_config = {}
+        self._nwgroups = self._resource_manager.get_nwgroups()
+        res_config = self._params.get("resource",{}).get("config",{})
+        for i in range(self._nwgroups):
+            self._wgroups.append(guts_workergroup(i,
+                                                  self._params,
+                                                  res_config,
+                                                  queue=self._queue))
+
+        # Start the worker groups
+        for wgroup in self._wgroups:
+            wgroup.acquire_resources(self._resource_manager)
+
+    def check(self) -> None:
+        """Check the scheduler queue and workergroups status."""
+        pass
+
+    def restore(self) -> None:
+        """Restore the workergroups if needed."""
+        pass
+
+    def get_queue(self) -> guts_queue:
+        """Return the scheduler queue."""
+        return self._queue
+
+    def add_task(self, task : guts_task) -> None:
+        """Add a new task to the queue."""
+        self._queue.add_task(task)
 
     def name(self) -> str:
         """Return the case name."""
