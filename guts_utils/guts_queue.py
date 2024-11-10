@@ -265,6 +265,17 @@ class guts_queue:
         conn.commit()
         conn.close()
 
+    def update_worker_group_resources(self,
+                                      gid : int,
+                                      resource : str) -> None:
+        """ Update the worker group resources set in queue """
+        print(gid, resource)
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE worker_groups SET resource_set_json = ? WHERE id = ?', (resource, gid))
+        conn.commit()
+        conn.close()
+
     def get_worker_groups_count(self) -> int:
         """ Return the number of worker groups """
         return self._exec_sql_getone('SELECT COUNT() FROM worker_groups')
@@ -293,8 +304,8 @@ class guts_queue:
         conn.close()
 
     def delete(self,
-                     wait_for_done : bool = True,
-                     timeout : int = 60) -> None:
+               wait_for_done : bool = True,
+               timeout : int = 60) -> None:
         """Delete the DB when all tasks and workers are done"""
         # Initialize time for timeout
         time_st = time.time()
