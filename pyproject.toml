@@ -3,6 +3,7 @@ name = "guts_proto"
 version = "0.0.1"
 dependencies = [
   "numpy>=1.24.2",
+  "toml>=0.10.2",
 ]
 authors = [
   { name = "Lucas Esclapez" }
