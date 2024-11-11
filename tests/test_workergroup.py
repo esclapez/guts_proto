@@ -22,6 +22,7 @@ def test_init_withqueue():
     config = {}
     res_config = {}
     wgroup = guts_workergroup(0, config, res_config, queue = queue)
+    queue.delete(timeout=2)
 
 def test_attach_queue():
     """Test creating a workergroup then attach a queue."""
@@ -30,6 +31,7 @@ def test_attach_queue():
     wgroup = guts_workergroup(0, config, res_config)
     queue = guts_queue()
     wgroup.attach_queue(queue)
+    queue.delete(timeout=2)
 
 def test_reattach_queue():
     """Test creating a workergroup with a queue then attach a queue."""
@@ -40,6 +42,7 @@ def test_reattach_queue():
     queue_2 = guts_queue()
     with pytest.raises(Exception):
         wgroup.attach_queue(queue_2)
+    queue_1.delete(timeout=2)
 
 def test_acquire_resources_without_queue():
     """Test creating a workergroup, acquiring resources without a queue."""

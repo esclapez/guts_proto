@@ -36,3 +36,4 @@ def test_oversubscribe_scheduler():
     guts_sched = guts_scheduler(a_args=[])
     with pytest.raises(Exception):
         guts_sched.start()
+    guts_sched.cleanup()
