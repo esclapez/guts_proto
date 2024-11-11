@@ -4,6 +4,7 @@ from multiprocessing import Process
 from guts_utils.guts_queue import guts_queue
 from guts_utils.guts_error import GUTSError
 from guts_utils.guts_sys_utils import get_cpu_count
+from guts_utils.guts_slurm_utils import make_job_script_wgroup
 from typing import Any
 import json
 import os
@@ -25,13 +26,18 @@ class resource_set_baseclass(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def acquire_resources(self, queue : guts_queue):
+    def acquire(self, queue : guts_queue):
         """Acquire the resources of the set."""
         pass
 
     @abstractmethod
     def serialize(self):
         """Serialize the resource set."""
+        pass
+
+    @abstractmethod
+    def release(self):
+        """Release the resources of the set."""
         pass
 
 class resource_manager:
@@ -41,6 +47,8 @@ class resource_manager:
         """Initialize the resource manager."""
         self._nwgroups : int = configs.get("resource",{}).get("nwgroups", 1)
         self._backend : str = configs.get("resource",{}).get("backend", "local")
+
+        # Keep track of cpu resources avaible (local backend)
         self._max_cpus : int = get_cpu_count()
         self._used_cpus : int = 0
 
@@ -54,11 +62,11 @@ class resource_manager:
             self._used_cpus += res.get_nworkers()
             if self._used_cpus > self._max_cpus:
                 raise GUTSError(f"Maximum number of CPUs reached: {self._max_cpus}")
-            res.acquire_resources(queue)
+            res.acquire(queue)
             return res
         elif self._backend == "slurm":
-            res = resource_set_slurm(res_config, wgroup_id)
-            res.acquire_resources(queue)
+            res = resource_set_slurm(res_configs, wgroup_id)
+            res.acquire(queue)
             return res
         else:
             raise ValueError(f"Unknown backend '{self._backend}'")
@@ -69,7 +77,7 @@ class resource_manager:
 
 class resource_set_local(resource_set_baseclass):
     """A local resource set class for GUTS."""
-    def _init_rs(self, res_config : dict[Any]):
+    def _init_rs(self, res_config : dict[Any]) -> None:
         """Initialize the local resource set."""
         self._nworkers : int = res_config.get("nworkers", 1)
         self._workers : list[Process] = []
@@ -77,7 +85,7 @@ class resource_set_local(resource_set_baseclass):
         self._runtime : int = res_config.get("runtime", 100)
         self._deamonize : bool = res_config.get("deamonize", False)
 
-    def acquire_resources(self, queue : guts_queue):
+    def acquire(self, queue : guts_queue) -> None:
         """Acquire the resources of the set."""
         # Double fork to detach the main process
         if self._deamonize:
@@ -93,13 +101,16 @@ class resource_set_local(resource_set_baseclass):
             if pid > 0:
                 os._exit(0)
 
+        # Take a 5% margin on worker runtime
+        w_runtime = 0.95 * self._runtime
+
         for i in range(self._nworkers):
             # Each worker runs the `worker_function` in a separate process
             self._workers.append(Process(target=worker_function, args=(queue,
                                                                        self._wgroup_id,
                                                                        i,
                                                                        100,
-                                                                       self._runtime)))
+                                                                       w_runtime)))
             self._workers[-1].start()
             self._workers_pids.append(self._workers[-1].pid)
 
@@ -107,7 +118,7 @@ class resource_set_local(resource_set_baseclass):
             for worker in self._workers:
                 worker.join()
 
-    def serialize(self):        
+    def serialize(self):
         """Serialize the local resource set."""
         return json.dumps({
             "nworkers": self._nworkers,
@@ -117,13 +128,37 @@ class resource_set_local(resource_set_baseclass):
     def get_nworkers(self):
         """Get the number of workers."""
         return self._nworkers
+
+    def release(self):
+        """Release the resources."""
+        for worker in self._workers:
+            worker.terminate()       
+
+class resource_set_slurm(resource_set_baseclass):
+    """A slurm resource set class for GUTS."""
+    def _init_rs(self, res_config : dict[Any]) -> None:
+        """Initialize the slurm resource set."""
+        self._slurm_job_id = None
+        self._slurm_job_script = None
+
+    def acquire(self, queue : guts_queue) -> None:
+        """Acquire the resources of the set."""
         
 
-#class resource_set_slurm(resource_set_baseclass):
-#    """A slurm resource set class for GUTS."""
-#    def _init_rs(self):
-#        """Initialize the slurm resource set."""
-#        pass
+    def serialize(self):
+        """Serialize the slurm resource set."""
+        return json.dumps({
+            "job_id": self._slurm_job_id,
+            "job_script": self._slurm_job_script
+        })
+
+    def _build_job_script():
+        """Build the job script as from config."""
+        pass
+
+    def release():
+        """Release the slurm resource."""
+        pass
 
 
 # Worker function that will run in a separate process
