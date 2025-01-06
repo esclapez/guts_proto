@@ -38,7 +38,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["pytams"]
+source = ["guts_utils"]
 command_line = "-m pytest"
 
 [tool.tox]
