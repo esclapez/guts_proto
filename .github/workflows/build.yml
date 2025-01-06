@@ -30,7 +30,6 @@ jobs:
         python-version: ['3.12']
     steps:
       - uses: actions/checkout@v4
-      - uses: koesterlab/setup-slurm-action@v1
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -45,6 +44,9 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python -m pip install -e .[dev,publishing]
       - name: Run unit tests
+        run: python -m pytest --cov --cov-append
+      - uses: koesterlab/setup-slurm-action@v1
+      - name: Run unit tests with slurm
         run: python -m pytest --cov --cov-report term --cov-report xml --junitxml=xunit-result.xml
       - name: Verify that we can build the package
         run: python -m build
