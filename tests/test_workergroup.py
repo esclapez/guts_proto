@@ -9,14 +9,14 @@ from guts_utils.guts_task import guts_task
 from guts_utils.guts_event import guts_event
 from guts_utils.guts_resource_manager import resource_manager
 
-def test_init():
+def test_init(slurm_not_available):
     """Test creating a workergroup."""
     config = {}
     res_config = {}
     wgroup = guts_workergroup(0, config, res_config)
     assert(wgroup.id() == 0)
 
-def test_init_withqueue():
+def test_init_withqueue(slurm_not_available):
     """Test creating a workergroup with a queue."""
     queue = guts_queue()
     config = {}

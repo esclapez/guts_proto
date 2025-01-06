@@ -26,7 +26,7 @@ def test_init_scheduler_wgroup_spawn():
     assert (guts_sched._wgroup_id_spawn == 42)
     guts_sched.cleanup()
 
-def test_start_scheduler():
+def test_start_scheduler(slurm_not_available):
     """Test starting a scheduler."""
     with open("input.toml", 'w') as f:
         toml.dump({"case": {"name": "test"},
