@@ -1,251 +1,513 @@
 """A resource set/manager classes for GUTS."""
+from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from multiprocessing import Process
-from guts_utils.guts_queue import guts_queue
 from guts_utils.guts_error import GUTSError
 from guts_utils.guts_sys_utils import get_cpu_count
-from guts_utils.guts_slurm_utils import make_job_script_wgroup
-from typing import Any
+from guts_utils.guts_slurm_utils import SlurmCluster, make_job_script_wgroup, time_to_s, submit_slurm_job, cancel_slurm_job
+from typing import Any, Optional
 import json
+import toml
 import os
 import sys
+import subprocess
 import time
 
 class resource_set_baseclass(metaclass=ABCMeta):
-    """A resource set base class for GUTS."""
+    """A resource set base class for GUTS.
+
+    A resource set base class, defining the API
+    expected by the resource_manager class.
+
+    The base class is responsible for the public initialization,
+    while concrete implementation relies on `_init_rs` to set
+    specific attributes.
+
+    Attributes
+    ----------
+    _wgroup_id : int
+        The id of the workergroup this resource set is attached to.
+    _nworkers : int
+        The number of workers in the resource set
+    __runtime : float
+        The lifespan of the resource set
+    _workers : list[Process]
+        The actual worker's Processes
+    _worker_pids : list[int]
+        Convenience list of worker's PID
+    """
     def __init__(self,
-                 res_config : dict[Any],
-                 wgroup_id : int):
-        """Initialize the resource set."""
+                 wgroup_id : int,
+                 res_config : Optional[dict[Any]] = None,
+                 json_str : Optional[str] = None) -> None:
+        """Initialize the resource set.
+
+        It can be initialized from a dictionary or from a 
+        previously serialized version of the set.
+        
+        Arguments
+        ---------
+        int
+            The id of the group with which this set is associated
+        Optional[dict[Any]]
+            A dictionary describing the resource set
+        Optional[str]
+            A json string describing the resource set
+        """
+        assert(res_config or json_str)
         self._wgroup_id = wgroup_id
-        self._init_rs(res_config)
+        self._nworkers : int = 0
+
+        # Concrete class need to override self._runtime
+        self._runtime : int | None = None
+
+        if res_config:
+            self._nworkers = res_config.get("nworkers", 1)
+        if json_str:
+            json_dict = json.loads(json_str) 
+            self._nworkers = json_dict.get("nworkers", 1)
+        self._workers = []
+        self._worker_pids : list[int] = [] 
+        self._init_rs(res_config = res_config, json_str = json_str)
 
     @abstractmethod
-    def _init_rs(self, res_config : dict[Any]):
-        """Asbtract method initializing the resource set."""
+    def _init_rs(self,
+                 res_config : Optional[dict[Any]] = None,
+                 json_str : Optional[str] = None) -> None:
+        """Asbtract method initializing the resource set.
+        
+        Arguments
+        ---------
+        Optional[dict[Any]]
+            A dictionary describing the resource set, passed from `__init__`
+        Optional[str]
+            A json string describing the resource set, passed from `__init__`
+        """
         pass
 
     @abstractmethod
-    def acquire(self, queue : guts_queue):
-        """Acquire the resources of the set."""
+    def request(self, config : dict[Any]) -> None:
+        """Request the resources of the set.
+        
+        A non-blocking call responsible of using subprocess to request
+        the resources of the set from the system.
+
+        Arguments
+        ---------
+        config : dict[Any]
+            The GUTS top-level configuration parameters dictionary.
+        """
         pass
 
     @abstractmethod
-    def serialize(self):
-        """Serialize the resource set."""
+    def serialize(self) -> str:
+        """Serialize the resource set.
+        
+        Returns
+        -------
+        str
+            A json_string describing the acquire resources, to be stored in the queue
+        """
         pass
 
     @abstractmethod
-    def release(self):
-        """Release the resources of the set."""
+    def from_json(self):
+        """Deserialize the resource set.
+        
+        Returns
+        -------
+        class
+            An instance of the particular derived class object
+        """
         pass
+
+    @abstractmethod
+    def release(self) -> None:
+        """Release the resources of the set.
+        
+        Raises
+        ------
+        RuntimeError
+            If something went wrong while releasing the resource
+        """
+        pass
+
+    def get_nworkers(self) -> int:
+        """Get the (theoretical) number of workers."""
+        return self._nworkers
+
+    def get_nworkers_active(self) -> int:
+        """Get the active number of workers."""
+        return len(self._workers)
+
+    def workers_initiated(self) -> bool:
+        """Test if all workers are initiated."""
+        return len(self._workers) >= self._nworkers
+
+    def append_worker_process(self, process : Process) -> None:
+        """Add a worker process to the list."""
+        self._workers.append(process)
+        self._workers[-1].start()
+        self._worker_pids.append(self._workers[-1].pid)
+
+    def worker_runtime(self) -> int:
+        """Return the worker runtime."""
+        assert self._runtime
+        return self._runtime
 
 class resource_manager:
-    """A resource manager class for GUTS."""
+    """A resource manager class for GUTS.
+
+    The resource manager interface between the workergroups
+    and the compute resources of the system.
+
+    Attributes
+    ----------
+    _nwgroups : int
+        The number of worker groups the manager has to handle
+    _backend : int
+        The type of compute resource available in the backend (local, slurm, ...)
+    _configs : dict[Any]
+        The GUTS full parmeters dictionary, augmented if necessary
+    """
     def __init__(self,
-                 configs : dict[Any]):
-        """Initialize the resource manager."""
+                 configs : dict[Any]) -> None:
+        """Initialize the resource manager.
+
+        Arguments
+        ---------
+        configs : dict[Any]
+            The GUTS full parmeters dictionary
+
+        Raises
+        ------
+        ValueError
+            If a configuration parameters has a wrong value
+        RuntimeError
+            If if was not possible to access the resource backend
+        """
         self._nwgroups : int = configs.get("resource",{}).get("nwgroups", 1)
         self._backend : str = configs.get("resource",{}).get("backend", "local")
+        self._configs : dict[Any] = configs
 
-        # Keep track of cpu resources avaible (local backend)
-        self._max_cpus : int = get_cpu_count()
-        self._used_cpus : int = 0
+        if self._backend == "local":
+            # Keep track of local cpu resources available
+            self._max_cpus : int = get_cpu_count()
+            self._used_cpus : int = 0
+
+        elif self._backend == "slurm":
+            # Gather information on the system using SlurmCluster
+            try:
+                self._cluster = SlurmCluster()
+            except Exception as e:
+                print("Error while instanciating a SlurmCluster")
+                raise
+            
 
     def get_resources(self,
                       res_configs : dict[Any],
-                      queue : guts_queue,
                       wgroup_id : int) -> resource_set_baseclass:
-        """Get the resources from the manager."""
+        """Get the resources from the manager.
+
+        Arguments
+        ---------
+        res_configs : dict[Any]
+            A dictionary describing the resource set
+        wgroup_id : int
+            The id of the workergroup for which the resources are acquired
+
+        Returns
+        -------
+        resource_set_baseclass
+            A resource set of the specified concrete type
+
+        Raises
+        ------
+        ValueError
+            If the resource specification has wrong parameters
+        RuntimeError
+            If something went wrong while trying to acquire the resources
+        """
         if self._backend == "local":
-            res = resource_set_local(res_configs, wgroup_id)
+            try:
+                res = resource_set_local(wgroup_id, res_config = res_configs)
+            except:
+                print("Resource manager caught a wrong parameter with wgroup {wgroup_id} resource set")
+                raise
             self._used_cpus += res.get_nworkers()
             if self._used_cpus > self._max_cpus:
-                raise GUTSError(f"Maximum number of CPUs reached: {self._max_cpus}")
-            res.acquire(queue)
+                raise RuntimeError(f"Maximum number of CPUs reached: {self._max_cpus}")
+            try:
+                res.request(self._configs)
+            except RuntimeError:
+                print(f"Resource manager failed to request local resources for wgroup {wgroup_id}")
+                raise
             return res
         elif self._backend == "slurm":
-            res = resource_set_slurm(res_configs, wgroup_id)
-            res.acquire(queue)
+            try:
+                updated_configs = self._cluster.process_res_config(res_configs)
+            except:
+                print("Resource manager caught a wrong parameter with wgroup {wgroup_id} resource set")
+                raise
+            res = resource_set_slurm(wgroup_id, res_config = updated_configs)
+            try:
+                res.request(self._configs)
+            except RuntimeError:
+                print("Resource manager failed to request slurm resources for wgroup {wgroup_id}")
+                raise
             return res
         else:
             raise ValueError(f"Unknown backend '{self._backend}'")
 
-    def get_nwgroups(self):
-        """Get the number of worker groups."""
+    def instanciate_resource(self, res_json : str) -> resource_set_baseclass:
+        """Instanciate a resource set from a json string.
+        
+        Arguments
+        ---------
+        res_json : str
+            The json string produced by serialization of a resource set
+
+        Raises
+        ------
+        ValueError
+            When mixing backends or providing erroneous wgroup ids
+        """
+        backend = json.loads(res_json)["type"]
+        if backend != self._backend:
+            raise ValueError("Resource manager mix-up: instanciating resource from json with different backend")
+
+        wgroup_id = json.loads(res_json)["wgroup_id"]
+        if self._backend == "local":
+            res = resource_set_local(wgroup_id, json_str = res_json)
+            return res
+
+        elif self._backend == "slurm":
+            res = resource_set_slurm(wgroup_id, json_str = res_json)
+            return res
+        else:
+            raise ValueError(f"Unknown backend '{self._backend}'")
+
+    def get_nwgroups(self) -> int:
+        """Get the number of workergroups."""
         return self._nwgroups
 
 class resource_set_local(resource_set_baseclass):
-    """A local resource set class for GUTS."""
-    def _init_rs(self, res_config : dict[Any]) -> None:
-        """Initialize the local resource set."""
-        self._nworkers : int = res_config.get("nworkers", 1)
-        self._workers : list[Process] = []
-        self._workers_pids : list[int] = []
-        self._runtime : int = res_config.get("runtime", 100)
-        self._deamonize : bool = res_config.get("deamonize", False)
+    """A local resource set class for GUTS.
 
-    def acquire(self, queue : guts_queue) -> None:
-        """Acquire the resources of the set."""
-        # Double fork to detach the main process
-        if self._deamonize:
-            pid = os.fork()
-            if pid > 0:
-                # Exit the main program immediately after fork.
-                os._exit(0)
-                return
+    Manage the resource available locally in the session.
+    This is the appropriate backend when working on a personal
+    computer.
 
-            os.setsid()
+    Attributes
+    ----------
+    _runtime : int
+        A runtime limit in seconds
+    _deamonize : bool
+        Release the main process, effectively deamonizing the workers ?
+    """
+    def _init_rs(self,
+                 res_config : Optional[dict[Any]] = None,
+                 json_str : Optional[str] = None) -> None:
+        """Initialize the local resource set attributes.
+    
+        Arguments
+        ---------
+        res_config : Optional[dict[Any]]
+            A dictionary describing the resource set
+        json_str : Optional[str]
+            A json string describing the resource set
+        """
+        if res_config:
+            self._runtime = res_config.get("runtime", 100)
+            self._daemonize : bool = res_config.get("daemonize", False)
+        if json_str:
+            json_dict = json.loads(json_str) 
+            self._runtime = json_dict.get("runtime", 100)
+            self._daemonize : bool = json_dict.get("daemonize", False)
 
-            pid = os.fork()
-            if pid > 0:
-                os._exit(0)
+    def request(self, config : dict[Any]) -> None:
+        """Request the resources of the set.
+        
+        Use subprocess to launch the run_workergroup CLI
+        with proper arguments.
 
-        # Take a 5% margin on worker runtime
-        w_runtime = 0.95 * self._runtime
+        Arguments
+        ---------
+        config : dict[Any]
+            The GUTS top-level configuration parameters dictionary.
 
-        for i in range(self._nworkers):
-            # Each worker runs the `worker_function` in a separate process
-            self._workers.append(Process(target=worker_function, args=(queue,
-                                                                       self._wgroup_id,
-                                                                       i,
-                                                                       100,
-                                                                       w_runtime)))
-            self._workers[-1].start()
-            self._workers_pids.append(self._workers[-1].pid)
+        Raises
+        ------
+        RuntimeError
+            If it fails to create the child process
+        """
+        # Check resource set was provided a definition
+        assert(self._runtime > 0)
 
-        if not self._deamonize:
-            for worker in self._workers:
-                worker.join()
+        # Process the configuration dict
+        toml_file = f"input_WG{self._wgroup_id:05d}.toml"
+        wgroup_config = dict(config)
+        wgroup_config[f"WG{self._wgroup_id:05d}"] = {"NullField" : 0}
+        with open(toml_file, "w") as f:
+            toml.dump(wgroup_config, f)
 
-    def serialize(self):
-        """Serialize the local resource set."""
+        # Request command
+        wgroup_cmd = ["run_workergroup"]
+        wgroup_cmd.append("-i")
+        wgroup_cmd.append(toml_file)
+        wgroup_cmd.append("-wg")
+        wgroup_cmd.append(f"{self._wgroup_id}")
+        print(wgroup_cmd)
+
+        # stdout/stderr, handles passed to the child process
+        stdout_name = f"stdout_{self._wgroup_id:05d}.txt"
+        stderr_name = f"stderr_{self._wgroup_id:05d}.txt"
+        stdout_f = open(stdout_name, "wb")
+        stderr_f = open(stderr_name, "wb")
+        try:
+            req_process = subprocess.Popen(wgroup_cmd,
+                                           stdout = stdout_f,
+                                           stderr = stderr_f,
+                                           start_new_session=True)
+        except Exception as e:
+            print(f"Unable to request resource using subprocess.call({wgroup_cmd})")
+            raise
+
+    def serialize(self) -> str:
+        """Serialize the local resource set.
+        
+        Returns
+        -------
+        str
+            A json sting version of the resource set
+        """
         return json.dumps({
+            "type": "local",
+            "wgroup_id": self._wgroup_id,
             "nworkers": self._nworkers,
-            "workers": self._workers_pids
+            "runtime": self._runtime,
+            "daemonize": self._daemonize,
         })
 
-    def get_nworkers(self):
-        """Get the number of workers."""
-        return self._nworkers
+    def from_json(resource_set_json : str) -> resource_set_local:
+        """Deserialize the local resource set."""
+        res_dict = json.loads(resource_set_json)
+        return resource_set_local(res_dict["wgroup_id"], json_str = resource_set_json)
 
-    def release(self):
+    def release(self) -> None:
         """Release the resources."""
-        for worker in self._workers:
-            worker.terminate()       
+        pass
 
 class resource_set_slurm(resource_set_baseclass):
-    """A slurm resource set class for GUTS."""
-    def _init_rs(self, res_config : dict[Any]) -> None:
-        """Initialize the slurm resource set."""
-        self._slurm_job_id = None
-        self._slurm_job_script = None
+    """A slurm resource set class for GUTS.
 
-    def acquire(self, queue : guts_queue) -> None:
-        """Acquire the resources of the set."""
+    Manage the resource available on an HPC cluster with the Slurm
+    job scheduler.
+
+    Attributes
+    ----------
+    _slurm_job_id : int | None
+        The Slurm job ID, obtained after the job is submitted to the scheduler
+    _slurm_job_script : list[str]
+        The Slurm batch script, assembled from resource set description
+    """
+    def _init_rs(self,
+                 res_config : Optional[dict[Any]] = None,
+                 json_str : Optional[str] = None) -> None:
+        """Initialize the slurm resource set.
+
+        Arguments
+        ---------
+        res_config : Optional[dict[Any]]
+            A dictionary describing the resource set
+        json_str : Optional[str]
+            A json string describing the resource set
+        """
+        if res_config:
+            self._slurm_job_id = None
+            self._slurm_submit_time = None
+            self._slurm_job_script = self._build_job_script(self._wgroup_id, res_config)
+            runtime = res_config.get("runtime", None)
+            self._runtime = time_to_s(runtime)
+        if json_str:
+            json_dict = json.loads(json_str)
+            self._runtime = time_to_s(str(json_dict.get("runtime")))
+            self._slurm_job_id = json_dict.get("job_id")
+            self._slurm_job_script = json_dict.get("job_script")
+
+    def request(self, config : dict[Any]) -> None:
+        """Request the resources of the set.
+
+        Arguments
+        ---------
+        config : dict[Any]
+            The GUTS top-level configuration parameters dictionary.
+
+        Raises
+        ------
+        RuntimeError
+            If it fails to submit the batch script
+        """
+        # Check resource set was provided a definition
+        assert(self._runtime > 0)
+
+        # Process the configuration dict
+        toml_file = f"input_WG{self._wgroup_id:05d}.toml"
+        wgroup_config = dict(config)
+        wgroup_config[f"WG{self._wgroup_id:05d}"] = {"NullField" : 0}
+        with open(toml_file, "w") as f:
+            toml.dump(wgroup_config, f)
+
+        try:
+            job_id = submit_slurm_job(self._wgroup_id,
+                                      self._slurm_job_script)
+            assert job_id is not None
+            self._slurm_job_id = job_id
+        except Exception as e:
+            print(e)
+            raise RuntimeError("Unable to submit batch script to slurm for wgroup {self._wgroup_id}")
         
 
-    def serialize(self):
+    def serialize(self) -> str:
         """Serialize the slurm resource set."""
         return json.dumps({
+            "type": "slurm",
+            "wgroup_id": self._wgroup_id,
+            "nworkers": self._nworkers,
+            "runtime": self._runtime,
             "job_id": self._slurm_job_id,
-            "job_script": self._slurm_job_script
+            "job_script": self._slurm_job_script,
         })
 
-    def _build_job_script():
-        """Build the job script as from config."""
-        pass
+    def from_json(resource_set_json) -> resource_set_slurm:
+        """Deserialize the slurm resource set."""
+        res_dict = json.loads(resource_set_json)
+        return resource_set_slurm(res_dict["wgroup_id"], json_str = resource_set_json)
 
-    def release():
+    def _build_job_script(self,
+                          wgroup_id : int,
+                          res_config : dict[Any]) -> list[str]:
+        """Build the job script from config.
+        
+        Arguments
+        ---------
+        wgroup_id : int
+            The id of the worker group
+        res_config : dict[Any]
+            A dictionary containing the entries needed for assembling a Slurm job script
+
+        Returns
+        -------
+        list[str]
+            The content of the job script as a list of strings
+        """
+        return make_job_script_wgroup(wgroup_id, res_config)
+
+    def release(self) -> None:
         """Release the slurm resource."""
-        pass
-
-
-# Worker function that will run in a separate process
-def worker_function(queue : guts_queue,
-                    wgroup_id : int,
-                    worker_id : int,
-                    max_tasks : int,
-                    runtime : int) -> None:
-    # Start the timer to trigger runtime termination
-    time_start = time.time()
-
-    # Set a tuple uniquely defining the worker
-    wid = (wgroup_id, worker_id)
-
-    # Worker might be queue-less for testing purposes
-    if queue:
-        # Register worker in queue
-        queue.register_worker(wid)
-
-    # TODO: add a hook function to initialize the worker data/ojects
-    while True:
-        # Check for function runtime termination
-        if time.time() - time_start > runtime:
-            print(f"Worker {worker_id} is stopping as the function runtime has exceeded {runtime} seconds.")
-            if queue:
-                queue.unregister_worker(wid)
-            break
-
-        # Worker might be queue-less for testing purposes
-        if queue:
-            # Check the completed task count
-            if queue.get_completed_tasks() >= max_tasks:
-                print(f"Worker {worker_id} is stopping as {max_tasks} tasks have been completed.")
-                queue.unregister_worker(wid)
-                break
-
-            # Check for events in the queue
-            event_data = queue.fetch_event()
-            if event_data:
-                event_id, event_count, event = event_data
-                process_event(event, wid, queue)
-
-            # Check for tasks in the queue
-            task_data = queue.fetch_task()
-            if task_data:
-                task_id, task_uuid, task = task_data
-                queue.update_worker_status(wid, f'in_progress-{task_id}')
-                print(f"Worker {worker_id} picked up task {task_id}")
-
-                # Execute the task using the registered functions
-                task.execute()
-
-                # Mark task as done
-                queue.mark_task_done(task_uuid)
-                print(f"Worker {worker_id} completed task {task_id}")
-
-                # Atomically increment the completed task counter
-                completed_tasks = queue.increment_completed_tasks()
-                queue.update_worker_status(wid, 'waiting')
-                print(f"Total completed tasks: {completed_tasks}")
-            else:
-                # If no tasks, wait for a while before trying again
-                print(f"Worker {worker_id} is waiting for tasks...")
-                time.sleep(0.5)
-
-        else:
-            # If no queue, wait for a while before trying again
-            time.sleep(0.5)
-
-def process_event(event : dict[Any],
-                  wid : tuple[int,int],
-                  queue : guts_queue) -> None:
-    """ Process the event action."""
-    wid_str = f"{wid[0]}-{wid[1]}"
-    if not (event.target == wid_str or event.target == 'all'):
-        return
-    print("Processing event")
-    if event.action in event_actions_dict:
-        event_actions_dict[event.action](wid, queue)
-
-def stop_worker(wid : tuple[int,int], queue : guts_queue) -> None:
-    """ Action to stop a worker """
-    print("Stopping worker")
-    queue.unregister_worker(wid)
-    sys.exit(0)
-
-# Dictionary of event actions
-event_actions_dict = {
-        "worker-kill": stop_worker,
-        }
+        if self._slurm_job_id:
+            try:
+                cancel_slurm_job(self._slurm_job_id)
+            except Exception as e:
+                print(f"Error while rReleasing resource for wgroup {self._wgroup_id}")
+                raise
