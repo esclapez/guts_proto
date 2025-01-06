@@ -44,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip setuptools
           python -m pip install -e .[dev,publishing]
       - name: Run unit tests
-        run: python -m pytest --cov --cov-append
+        run: python -m pytest --cov --cov-append --cov-report term
       - uses: koesterlab/setup-slurm-action@v1
       - name: Run unit tests with slurm
         run: python -m pytest --cov --cov-report term --cov-report xml --junitxml=xunit-result.xml
