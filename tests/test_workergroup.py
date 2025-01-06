@@ -26,7 +26,7 @@ def test_init_withqueue():
     assert queue.get_worker_groups_count() == 1
     queue.delete(timeout=2)
 
-def test_attach_queue():
+def test_attach_queue(slurm_not_available):
     """Test creating a workergroup then attach a queue."""
     config = {}
     res_config = {}
@@ -37,7 +37,7 @@ def test_attach_queue():
     assert queue.get_worker_groups_count() == 1
     queue.delete(timeout=2)
 
-def test_reattach_queue():
+def test_reattach_queue(slurm_not_available):
     """Test creating a workergroup with a queue then attach a queue."""
     queue_1 = guts_queue()
     config = {}
@@ -48,7 +48,7 @@ def test_reattach_queue():
         wgroup.attach_queue(queue_2)
     queue_1.delete(timeout=2)
 
-def test_request_resources_without_queue():
+def test_request_resources_without_queue(slurm_not_available):
     """Test requiring resources without a queue."""
     config = {}
     res_config = {}
@@ -57,7 +57,7 @@ def test_request_resources_without_queue():
     with pytest.raises(Exception):
         wgroup.request_resources(manager)
 
-def test_launch_without_queue():
+def test_launch_without_queue(slurm_not_available):
     """Test launching without a queue."""
     config = {}
     res_config = {}
@@ -66,7 +66,7 @@ def test_launch_without_queue():
     with pytest.raises(Exception):
         wgroup.launch(manager)
 
-def test_request_resources_with_queue_erroneous_res():
+def test_request_resources_with_queue_erroneous_res(slurm_not_available):
     """Test requiring resources with a queue, erroneous resources"""
     # Setup wgroup
     config = {}
@@ -80,7 +80,7 @@ def test_request_resources_with_queue_erroneous_res():
         wgroup.request_resources(manager)
     queue.delete(timeout=2)
 
-def test_request_resources_with_queue():
+def test_request_resources_with_queue(slurm_not_available):
     """Test creating a workergroup, requiring resources and a queue."""
     # Setup wgroup
     config = {"case" : {"queue_file" : "myqueue.db"}}
