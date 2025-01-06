@@ -69,7 +69,7 @@ def test_get_resources_slurm(slurm_available):
     """Test getting a slurm resource set through the manager."""
     config = {"resource" : {"nwgroups": 1, "backend": "slurm"}}
     manager = resource_manager(config)
-    res_config = {"nodes": 2, "runtime": "00:10",
+    res_config = {"nodes": 1, "runtime": "00:10",
                   "extra_directives": {"--exclusive" : None}}
                                        #"--hold": None}}
     resources = manager.get_resources(res_config, 0)
