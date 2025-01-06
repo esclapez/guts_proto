@@ -17,6 +17,22 @@ readme = "README.md"
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project.optional-dependencies]
+dev = [ 
+    "build",  # build is not only used in publishing (below), but also in the template's test suite
+    "bump-my-version",
+    "coverage [toml]",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "sphinx",
+    "furo",
+    "sphinx-autoapi",
+    "tox",
+    "myst_parser",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -118,3 +134,6 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_untyped_calls = false
 warn_redundant_casts = true
+
+[project.scripts]
+run_workergroup = "guts_utils.bin:sched_workergroup"
