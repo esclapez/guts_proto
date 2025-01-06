@@ -123,7 +123,7 @@ def test_register_worker_group():
     """Test registering a worker group."""
     queue = guts_queue()
     queue.register_worker_group(1)
-    assert queue.check_worker_group(1) == "waiting"
+    assert queue.check_worker_group(1) == "pending"
     os.remove("./guts_queue.db")
 
 def test_unregister_worker_group():

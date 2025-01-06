@@ -1,5 +1,6 @@
 from guts_utils.guts_task import guts_task
 from guts_utils.guts_event import guts_event
+from guts_utils.guts_resource_manager import resource_set_baseclass
 from typing import Optional, Any
 import uuid
 import time
@@ -9,14 +10,32 @@ import sqlite3
 class guts_queue:
     """A disk-based SQL queue for GUTS.
 
-    TODO: a description of content and API
+    The GUTS queue is a lightweight class interfacing with a
+    disk-based SQL queue. It provides GUTS core scheduler
+    components (workers, workergroup, resource manager, tasks, ...)
+    an atomic process to interact with the flow of GUTS.
     """
-    def __init__(self, db_name : Optional[str] = 'guts_queue.db'):
+    def __init__(self,
+                 db_name : Optional[str] = 'guts_queue.db'):
+        """Initialize the GUTS queue
+
+        Arguments
+        ---------
+        str
+            The queue file name [Optional]
+        """
         self.db_name = db_name
         self._init_db()
 
     def _init_db(self):
-        """ Initialize the task table and counter table """
+        """Initialize the content of the queue.
+
+
+        Raises
+        ------
+        RuntimeError
+            If a connection to the DB could not be acquired
+        """
         conn = self._connect()
         cursor = conn.cursor()
 
@@ -63,23 +82,32 @@ class guts_queue:
         ''')
 
         # Create a worker group register
+        # status
+        # 'pending'
+        #   Upon requesting resources for a worker group.
+        # 'active'
+        #   When worker group has initiated his workers
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS worker_groups (
             id INTEGER NOT NULL,
             resource_set_json TEXT,
-            status TEXT NOT NULL DEFAULT 'waiting'
+            status TEXT NOT NULL DEFAULT 'pending'
         )
         ''')
 
         conn.commit()
         conn.close()
 
-    def _connect(self):
+    def _connect(self, isolation_level : Optional[str] = "DEFERRED"):
         """ Create a new SQLite connection for each process """
         # Append uuid to SQL supported types
         sqlite3.register_adapter(uuid.UUID, lambda u: u.bytes_le)
         sqlite3.register_converter('GUID', lambda b: uuid.UUID(bytes_le=b))
-        return sqlite3.connect(self.db_name)
+        try:
+            return sqlite3.connect(self.db_name, isolation_level = isolation_level)
+        except Exception:
+            print(f"Unable to connect to {self.db_name}")
+            raise
 
     def _exec_sql_getone(self, sql_cmd : str, args : Optional[tuple] = None) -> Optional[Any]:
         """ Execute an SQL command """
@@ -129,6 +157,7 @@ class guts_queue:
         sqlite3.register_converter('GUID', lambda b: uuid.UUID(bytes_le=b))
         conn = self._connect()
         cursor = conn.cursor()
+        cursor.execute("BEGIN EXCLUSIVE TRANSACTION")
         cursor.execute('SELECT id, uuid, dep, task_json FROM tasks WHERE status = ? ORDER BY id LIMIT 1', ('pending',))
         task_data = cursor.fetchone()
 
@@ -268,13 +297,29 @@ class guts_queue:
     def update_worker_group_resources(self,
                                       gid : int,
                                       resource : str) -> None:
-        """ Update the worker group resources set in queue """
-        print(gid, resource)
+        """Update the worker group resources set in queue."""
         conn = self._connect()
         cursor = conn.cursor()
         cursor.execute('UPDATE worker_groups SET resource_set_json = ? WHERE id = ?', (resource, gid))
         conn.commit()
         conn.close()
+
+    def get_worker_group_resource(self,
+                                  gid : int) -> str | None:
+        """Query the queue to get a given workergroup resource."""
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute('SELECT resource_set_json, status FROM worker_groups WHERE id = ?', (gid,))
+        wgroup_data = cursor.fetchone()
+
+        if wgroup_data:
+            resource_set, status = wgroup_data
+            cursor.execute('UPDATE worker_groups SET status = ? WHERE id = ?', ('active', gid))
+            conn.commit()
+            conn.close()
+            return resource_set
+        conn.close()
+        return None
 
     def get_worker_groups_count(self) -> int:
         """ Return the number of worker groups """

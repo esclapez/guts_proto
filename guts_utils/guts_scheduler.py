@@ -17,6 +17,7 @@ def parse_cl_args(a_args: Optional[list[str]] = None) -> argparse.Namespace :
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", help="GUTS input .toml file", default="input.toml")
+    parser.add_argument("-wg", "--wgroup", help="workergroup number")
     if a_args is not False:
         args = parser.parse_args(a_args)
     else:
@@ -24,6 +25,34 @@ def parse_cl_args(a_args: Optional[list[str]] = None) -> argparse.Namespace :
     return args
 
 class guts_scheduler:
+    """A scheduler class for GUTS
+
+    The GUTS scheduler is the top-level, user-facing end of GUTS compute
+    system, which includes a disk-based queue, a resources manager
+    and a set of worker groups, each of which containing multiple
+    workers with a set of resources.
+
+    The scheduler is designed to not be persistent, but rather
+    respawned at will by the user or the individual worker group
+    themselves.
+
+    Attributes
+    ----------
+    _params : dict[Any]
+        The configuration parameters dictionary
+    _name : str
+        The scheduler name
+    _queue_file : str
+        The name of the guts_queue file associated with the scheduler
+    _queue : guts_queue
+        A guts_queue object with which the scheduler interacts
+    _resource_manager : resource_manager
+        A resource manager to dispatch resources to worker groups
+    _wgroups : list[guts_workergroup]
+        A list of workergroup
+    _nwgroups : int
+        The number of worker groups the scheduler manage
+    """
     def __init__(self,
                  a_args: Optional[list[str]] = None) -> None:
         """Initialize scheduler internals.
@@ -34,11 +63,14 @@ class guts_scheduler:
         # Read input parameters
         input_file = vars(parse_cl_args(a_args=a_args))["input"]
         if (not os.path.exists(input_file)):
-            raise GUTSError(
-                "Could not find the {} GUST input file !".format(input_file)
+            raise ValueError(
+                "Could not find the {} GUTS input file !".format(input_file)
             )
         with open(input_file, 'r') as f:
             self._params = toml.load(f)
+
+        # Add the input file name to the dict for future reference
+        self._params["input_toml"] = input_file
             
         # Scheduler metadata
         self._name = self._params.get("case",{}).get("name","guts_run")
@@ -48,11 +80,11 @@ class guts_scheduler:
         # Worker groups & compute resources
         self._resource_manager = resource_manager(self._params)
         self._wgroups : list[guts_workergroup] = []
-    
-    def start(self) -> None:
-        """Start the scheduler."""
-        # Initialize the worker groups
+
+        # Minimalist internal initiation
         self._nwgroups = self._resource_manager.get_nwgroups()
+    
+        # TODO: enable map wgroups to different resource configs
         res_config = self._params.get("resource",{}).get("config",{})
         for i in range(self._nwgroups):
             self._wgroups.append(guts_workergroup(i,
@@ -60,9 +92,34 @@ class guts_scheduler:
                                                   res_config,
                                                   queue=self._queue))
 
-        # Start the worker groups
+        # Parse workergroup number if provided
+        wgroup_id_str = vars(parse_cl_args(a_args=a_args))["wgroup"]
+        self._wgroup_id_spawn = None
+        if wgroup_id_str:
+            self._wgroup_id_spawn = int(wgroup_id_str)
+        
+    
+    def start(self) -> None:
+        """Start the scheduler.
+        
+        This a non-blocking call, where each workergroup is initiated
+        and launched seperately depending on the resource backend type.
+        """
+        # Initiate the worker groups by requesting resource from the manager
         for wgroup in self._wgroups:
-            wgroup.acquire_resources(self._resource_manager)
+            wgroup.request_resources(self._resource_manager)
+
+    def run_wgroup(self) -> None:
+        """Run a given workergroup.
+
+        Arguments
+        ---------
+        wgroup_id : int
+            A workergroup index
+        """
+        assert self._wgroup_id_spawn < self._nwgroups
+        target_wgroup = self._wgroups[self._wgroup_id_spawn]
+        target_wgroup.launch(self._resource_manager)
 
     def check(self) -> None:
         """Check the scheduler queue and workergroups status."""

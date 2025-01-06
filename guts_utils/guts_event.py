@@ -11,7 +11,7 @@ class guts_event:
     action : str
     target : Optional[str] = None
 
-    def to_json(self):
+    def to_json(self) -> str:
         """ Serialize the event to a JSON string for storage """
         return json.dumps({
             'id': self.eid,
