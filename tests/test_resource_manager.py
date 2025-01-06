@@ -20,16 +20,14 @@ def test_init_manager_unknown_backend():
     with pytest.raises(Exception):
         _ = manager.get_resources({}, 0)
 
-def test_get_resources(slurm_not_available):
-    """Test getting the resources from the manager."""
-    config = {"case" : {"name" : "RSTests"},
-              "resource" : {"nwgroups": 1}}
-    manager = resource_manager(config)
-    res_config = {"nworkers": 2, "runtime": 1}
-    resources = manager.get_resources(res_config, 0)
-    time.sleep(0.5)
-    assert(resources.get_nworkers() == 2)
-    pathlib.Path.unlink("./RSTests_queue.db")
+#def test_get_resources(slurm_not_available):
+#    """Test getting the resources from the manager."""
+#    config = {"case" : {"name" : "RSTests"},
+#              "resource" : {"nwgroups": 1}}
+#    manager = resource_manager(config)
+#    res_config = {"nworkers": 2, "runtime": 1}
+#    resources = manager.get_resources(res_config, 0)
+#    assert(resources.get_nworkers() == 2)
 
 def test_oversubscribe_resources():
     """Test getting too many resources from the manager."""

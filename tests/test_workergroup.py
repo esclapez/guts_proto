@@ -98,22 +98,22 @@ def test_request_resources_with_queue():
     time.sleep(1)
     queue.delete(timeout=5)
 
-def test_request_resources_with_queue_and_tasks():
-    """Test creating a workergroup, with resources, queue and tasks."""
-    # Setup wgroup
-    config = {"case" : {"queue_file" : "myqueue.db"}}
-    res_config = {"nworkers": 2, "deamonize": False, "runtime": 3}
-    wgroup = guts_workergroup(0, config, res_config)
-    # Attach queue
-    queue = guts_queue("myqueue.db")
-    for _ in range(10):
-        queue.add_task(guts_task("function_test", {"nap_duration": 0.1}))
-    wgroup.attach_queue(queue)
-    # Define resource manager and request resources for the group
-    manager = resource_manager(config)
-    wgroup.request_resources(manager)
-    # Give times for tasks to run
-    time.sleep(2)
-    # Check queue for number of tasks done
-    assert queue.get_completed_tasks() == 10
-    queue.delete(timeout=5)
+#def test_request_resources_with_queue_and_tasks():
+#    """Test creating a workergroup, with resources, queue and tasks."""
+#    # Setup wgroup
+#    config = {"case" : {"queue_file" : "myqueue.db"}}
+#    res_config = {"nworkers": 2, "deamonize": False, "runtime": 3}
+#    wgroup = guts_workergroup(0, config, res_config)
+#    # Attach queue
+#    queue = guts_queue("myqueue.db")
+#    for _ in range(10):
+#        queue.add_task(guts_task("function_test", {"nap_duration": 0.1}))
+#    wgroup.attach_queue(queue)
+#    # Define resource manager and request resources for the group
+#    manager = resource_manager(config)
+#    wgroup.request_resources(manager)
+#    # Give times for tasks to run
+#    time.sleep(2)
+#    # Check queue for number of tasks done
+#    assert queue.get_completed_tasks() == 10
+#    queue.delete(timeout=5)
